@@ -1,5 +1,8 @@
 name: letmerelease
 description: Publish every crate of a cargo workspace in dependency order
+branding:
+  icon: upload-cloud
+  color: yellow
 inputs:
   token:
     description: crates.io token, exported as CARGO_REGISTRY_TOKEN
