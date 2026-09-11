@@ -16,7 +16,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - run: cargo install --git https://github.com/marc2332/letmerelease --rev ${{ github.action_ref }} --locked
+    - run: cargo install --path "${{ github.action_path }}" --locked
       shell: bash
     - run: letmerelease ${{ inputs.dry-run == 'true' && '--dry-run' || '' }} ${{ inputs.args }}
       shell: bash
