@@ -1,0 +1,14 @@
+[package]
+name = "letmerelease"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Workspace-oriented publisher for cargo projects"
+repository = "https://github.com/marc2332/letmerelease"
+readme = "README.md"
+keywords = ["cargo", "publish", "workspace", "release"]
+categories = ["development-tools::cargo-plugins", "command-line-utilities"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"

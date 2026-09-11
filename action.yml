@@ -1,0 +1,21 @@
+name: letmerelease
+description: Publish every crate of a cargo workspace in dependency order
+inputs:
+  token:
+    description: crates.io token, exported as CARGO_REGISTRY_TOKEN
+    required: true
+  dry-run:
+    description: Verify without uploading
+    default: "false"
+  args:
+    description: Extra arguments for letmerelease
+    default: ""
+runs:
+  using: composite
+  steps:
+    - run: cargo install --git https://github.com/marc2332/letmerelease --rev ${{ github.action_ref }} --locked
+      shell: bash
+    - run: letmerelease ${{ inputs.dry-run == 'true' && '--dry-run' || '' }} ${{ inputs.args }}
+      shell: bash
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ inputs.token }}
