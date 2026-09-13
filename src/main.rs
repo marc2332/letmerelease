@@ -46,8 +46,13 @@ impl Crate {
             .map_err(|error| format!("invalid cargo metadata: {error}"))?;
 
         let packages = metadata["packages"].as_array().into_iter().flatten();
-        let names: Vec<&str> = packages
+        let publishable: Vec<&str> = packages
             .clone()
+            .filter(|package| {
+                package["publish"]
+                    .as_array()
+                    .is_none_or(|registries| !registries.is_empty())
+            })
             .filter_map(|package| package["name"].as_str())
             .collect();
 
@@ -67,7 +72,7 @@ impl Crate {
                         dependency["kind"] != "dev" && dependency["path"].is_string()
                     })
                     .filter_map(|dependency| dependency["name"].as_str())
-                    .filter(|name| names.contains(name))
+                    .filter(|name| publishable.contains(name))
                     .map(str::to_owned)
                     .collect(),
             })
@@ -78,7 +83,12 @@ impl Crate {
 
 /// Orders crates so every crate comes after its workspace dependencies.
 fn publish_order(mut crates: Vec<Crate>) -> Result<Vec<String>, String> {
-    crates.sort_by(|left, right| left.name.cmp(&right.name));
+    crates.sort_by(|left, right| {
+        left.workspace_deps
+            .len()
+            .cmp(&right.workspace_deps.len())
+            .then_with(|| left.name.cmp(&right.name))
+    });
     let mut pending: HashMap<&str, usize> = crates
         .iter()
         .map(|krate| (krate.name.as_str(), krate.workspace_deps.len()))
@@ -88,7 +98,13 @@ fn publish_order(mut crates: Vec<Crate>) -> Result<Vec<String>, String> {
     while order.len() < crates.len() {
         let Some(next) = crates
             .iter()
-            .find(|krate| pending.get(krate.name.as_str()) == Some(&0))
+            .filter(|krate| pending.get(krate.name.as_str()) == Some(&0))
+            .min_by(|left, right| {
+                left.workspace_deps
+                    .len()
+                    .cmp(&right.workspace_deps.len())
+                    .then_with(|| left.name.cmp(&right.name))
+            })
             .map(|krate| krate.name.clone())
         else {
             return Err("dependency cycle between workspace crates".to_owned());
