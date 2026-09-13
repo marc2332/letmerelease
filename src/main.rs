@@ -56,15 +56,14 @@ impl Crate {
             .filter_map(|package| package["name"].as_str())
             .collect();
 
-        let crates = packages
+        let mut crates: Vec<Crate> = packages
             .filter(|package| {
                 package["publish"]
                     .as_array()
                     .is_none_or(|registries| !registries.is_empty())
             })
-            .map(|package| Crate {
-                name: package["name"].as_str().unwrap_or_default().to_owned(),
-                workspace_deps: package["dependencies"]
+            .map(|package| {
+                let mut workspace_deps: Vec<String> = package["dependencies"]
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -74,9 +73,21 @@ impl Crate {
                     .filter_map(|dependency| dependency["name"].as_str())
                     .filter(|name| publishable.contains(name))
                     .map(str::to_owned)
-                    .collect(),
+                    .collect();
+                workspace_deps.sort_unstable();
+                workspace_deps.dedup();
+                Crate {
+                    name: package["name"].as_str().unwrap_or_default().to_owned(),
+                    workspace_deps,
+                }
             })
             .collect();
+        crates.sort_by(|left, right| {
+            left.workspace_deps
+                .len()
+                .cmp(&right.workspace_deps.len())
+                .then_with(|| left.name.cmp(&right.name))
+        });
         Ok(crates)
     }
 }
