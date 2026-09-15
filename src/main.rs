@@ -22,13 +22,19 @@ struct Args {
     /// Workspaces with more crates than this get paused between batches
     #[arg(long, default_value_t = 20)]
     large: usize,
+    /// Skip the crates.io sparse-index check for already-published versions
+    #[arg(long)]
+    skip_check: bool,
     /// Extra arguments forwarded to `cargo publish`
     #[arg(last = true)]
     cargo_args: Vec<String>,
 }
 
+const USER_AGENT: &str = concat!("letmerelease/", env!("CARGO_PKG_VERSION"));
+
 struct Crate {
     name: String,
+    version: String,
     workspace_deps: Vec<String>,
 }
 
@@ -78,6 +84,7 @@ impl Crate {
                 workspace_deps.dedup();
                 Crate {
                     name: package["name"].as_str().unwrap_or_default().to_owned(),
+                    version: package["version"].as_str().unwrap_or_default().to_owned(),
                     workspace_deps,
                 }
             })
@@ -134,6 +141,40 @@ fn publish_order(mut crates: Vec<Crate>) -> Result<Vec<String>, String> {
     Ok(order)
 }
 
+/// Builds the crates.io sparse-index path for a crate name.
+/// See <https://doc.rust-lang.org/cargo/reference/registry-index.html#index-files>.
+fn index_path(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    match lower.len() {
+        1 => format!("1/{lower}"),
+        2 => format!("2/{lower}"),
+        3 => format!("3/{}/{lower}", &lower[..1]),
+        _ => format!("{}/{}/{lower}", &lower[..2], &lower[2..4]),
+    }
+}
+
+/// Queries the crates.io sparse index and returns `true` if `version`
+/// (yanked or not) already exists for `name`.
+fn is_published(name: &str, version: &str) -> Result<bool, String> {
+    let url = format!("https://index.crates.io/{}", index_path(name));
+    let response = match ureq::get(&url).set("User-Agent", USER_AGENT).call() {
+        Ok(response) => response,
+        Err(ureq::Error::Status(404, _)) => return Ok(false),
+        Err(error) => return Err(format!("index request for {name} failed: {error}")),
+    };
+    let body = response
+        .into_string()
+        .map_err(|error| format!("read index response for {name}: {error}"))?;
+    for line in body.lines().filter(|line| !line.trim().is_empty()) {
+        let entry: Value = serde_json::from_str(line)
+            .map_err(|error| format!("invalid index entry for {name}: {error}"))?;
+        if entry["vers"].as_str() == Some(version) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn cargo_publish(args: &[&str], extra: &[String]) -> Result<(), String> {
     let status = Command::new("cargo")
         .arg("publish")
@@ -149,14 +190,44 @@ fn cargo_publish(args: &[&str], extra: &[String]) -> Result<(), String> {
 }
 
 fn run(args: Args) -> Result<(), String> {
-    let order = publish_order(Crate::workspace()?)?;
+    let crates = Crate::workspace()?;
+    let versions: HashMap<String, String> = crates
+        .iter()
+        .map(|krate| (krate.name.clone(), krate.version.clone()))
+        .collect();
+    let order = publish_order(crates)?;
     if order.is_empty() {
         return Err("no publishable crates found".to_owned());
     }
-    let paced = order.len() > args.large;
 
-    println!("Publishing {} crates in this order:", order.len());
-    for (index, name) in order.iter().enumerate() {
+    let mut pending: Vec<String> = Vec::with_capacity(order.len());
+    let mut skipped: Vec<String> = Vec::new();
+    for name in &order {
+        let version = versions
+            .get(name)
+            .ok_or_else(|| format!("missing version for {name}"))?;
+        if !args.skip_check && is_published(name, version)? {
+            skipped.push(format!("{name}@{version}"));
+        } else {
+            pending.push(name.clone());
+        }
+    }
+
+    if !skipped.is_empty() {
+        println!("Skipping {} already-published crates:", skipped.len());
+        for name in &skipped {
+            println!("  - {name}");
+        }
+    }
+
+    if pending.is_empty() {
+        println!("Nothing left to publish.");
+        return Ok(());
+    }
+
+    let paced = pending.len() > args.large;
+    println!("Publishing {} crates in this order:", pending.len());
+    for (index, name) in pending.iter().enumerate() {
         println!("  {}. {name}", index + 1);
     }
     if paced {
@@ -167,18 +238,21 @@ fn run(args: Args) -> Result<(), String> {
     }
 
     if args.dry_run {
-        let packages: Vec<&str> = order.iter().flat_map(|name| ["-p", name]).collect();
+        let packages: Vec<&str> = pending
+            .iter()
+            .flat_map(|name| ["-p", name.as_str()])
+            .collect();
         return cargo_publish(
             &[packages.as_slice(), &["--dry-run"]].concat(),
             &args.cargo_args,
         );
     }
 
-    for (index, name) in order.iter().enumerate() {
-        println!("\nPublishing {name} ({}/{})", index + 1, order.len());
+    for (index, name) in pending.iter().enumerate() {
+        println!("\nPublishing {name} ({}/{})", index + 1, pending.len());
         cargo_publish(&["-p", name], &args.cargo_args)?;
         let batch_done = (index + 1) % args.batch.max(1) == 0;
-        if paced && batch_done && index + 1 < order.len() {
+        if paced && batch_done && index + 1 < pending.len() {
             println!("Waiting {}s before the next batch", args.wait);
             sleep(Duration::from_secs(args.wait));
         }
@@ -198,11 +272,12 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Crate, publish_order};
+    use crate::{Crate, index_path, publish_order};
 
     fn krate(name: &str, deps: &[&str]) -> Crate {
         Crate {
             name: name.to_owned(),
+            version: "0.0.0".to_owned(),
             workspace_deps: deps.iter().map(|dep| dep.to_string()).collect(),
         }
     }
@@ -221,5 +296,14 @@ mod tests {
     fn cycles_are_rejected() {
         let crates = vec![krate("a", &["b"]), krate("b", &["a"])];
         assert!(publish_order(crates).is_err());
+    }
+
+    #[test]
+    fn index_path_matches_registry_spec() {
+        assert_eq!(index_path("a"), "1/a");
+        assert_eq!(index_path("ab"), "2/ab");
+        assert_eq!(index_path("abc"), "3/a/abc");
+        assert_eq!(index_path("serde"), "se/rd/serde");
+        assert_eq!(index_path("Tokio"), "to/ki/tokio");
     }
 }
