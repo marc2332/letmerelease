@@ -15,7 +15,8 @@ cargo install letmerelease
 ```sh
 letmerelease              # publish the workspace
 letmerelease --dry-run    # print the plan and run cargo publish --dry-run
-letmerelease -- --no-verify --registry my-registry   # forward arguments to cargo publish
+letmerelease --registry my-registry  # publish to a custom Cargo registry
+letmerelease -- --no-verify          # forward arguments to cargo publish
 ```
 
 | Flag | Default | Meaning |
@@ -24,6 +25,8 @@ letmerelease -- --no-verify --registry my-registry   # forward arguments to carg
 | `--batch` | 5 | Crates to publish before pausing |
 | `--wait` | 180 | Seconds to pause between batches |
 | `--large` | 20 | Pausing only kicks in above this many crates |
+| `--registry` | crates.io | Registry passed to `cargo publish` |
+| `--ignore-published` | off | Include crates whose versions are already published |
 
 Authentication is left to cargo, so use `cargo login` or `CARGO_REGISTRY_TOKEN`.
 
