@@ -25,7 +25,7 @@ struct Args {
     /// Registry to publish to. Custom registries are forwarded without a crates.io check
     #[arg(long)]
     registry: Option<String>,
-    /// Include crates even when their versions are already published
+    /// Ignore whether crate versions are already published
     #[arg(long)]
     ignore_published: bool,
     /// Extra arguments forwarded to `cargo publish`
