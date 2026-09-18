@@ -22,6 +22,9 @@ struct Args {
     /// Workspaces with more crates than this get paused between batches
     #[arg(long, default_value_t = 20)]
     large: usize,
+    /// Registry to publish to. Custom registries are forwarded without a crates.io check
+    #[arg(long)]
+    registry: Option<String>,
     /// Skip the crates.io sparse-index check for already-published versions
     #[arg(long)]
     skip_check: bool,
@@ -200,13 +203,24 @@ fn run(args: Args) -> Result<(), String> {
         return Err("no publishable crates found".to_owned());
     }
 
+    let mut forwarded_args = Vec::with_capacity(args.cargo_args.len() + 2);
+    if let Some(registry) = &args.registry {
+        forwarded_args.push("--registry".to_owned());
+        forwarded_args.push(registry.clone());
+    }
+    forwarded_args.extend(args.cargo_args);
+
+    let check_crates_io = args
+        .registry
+        .as_deref()
+        .is_none_or(|registry| registry == "crates-io");
     let mut pending: Vec<String> = Vec::with_capacity(order.len());
     let mut skipped: Vec<String> = Vec::new();
     for name in &order {
         let version = versions
             .get(name)
             .ok_or_else(|| format!("missing version for {name}"))?;
-        if !args.skip_check && is_published(name, version)? {
+        if check_crates_io && !args.skip_check && is_published(name, version)? {
             skipped.push(format!("{name}@{version}"));
         } else {
             pending.push(name.clone());
@@ -244,13 +258,13 @@ fn run(args: Args) -> Result<(), String> {
             .collect();
         return cargo_publish(
             &[packages.as_slice(), &["--dry-run"]].concat(),
-            &args.cargo_args,
+            &forwarded_args,
         );
     }
 
     for (index, name) in pending.iter().enumerate() {
         println!("\nPublishing {name} ({}/{})", index + 1, pending.len());
-        cargo_publish(&["-p", name], &args.cargo_args)?;
+        cargo_publish(&["-p", name], &forwarded_args)?;
         let batch_done = (index + 1) % args.batch.max(1) == 0;
         if paced && batch_done && index + 1 < pending.len() {
             println!("Waiting {}s before the next batch", args.wait);
