@@ -236,6 +236,16 @@ fn run(args: Args) -> Result<(), String> {
 
     if pending.is_empty() {
         println!("Nothing left to publish.");
+        if args.dry_run {
+            let packages: Vec<&str> = order
+                .iter()
+                .flat_map(|name| ["-p", name.as_str()])
+                .collect();
+            return cargo_publish(
+                &[packages.as_slice(), &["--dry-run"]].concat(),
+                &forwarded_args,
+            );
+        }
         return Ok(());
     }
 
