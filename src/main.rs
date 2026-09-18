@@ -25,9 +25,9 @@ struct Args {
     /// Registry to publish to. Custom registries are forwarded without a crates.io check
     #[arg(long)]
     registry: Option<String>,
-    /// Skip the crates.io sparse-index check for already-published versions
+    /// Include crates even when their versions are already published
     #[arg(long)]
-    skip_check: bool,
+    ignore_published: bool,
     /// Extra arguments forwarded to `cargo publish`
     #[arg(last = true)]
     cargo_args: Vec<String>,
@@ -220,7 +220,7 @@ fn run(args: Args) -> Result<(), String> {
         let version = versions
             .get(name)
             .ok_or_else(|| format!("missing version for {name}"))?;
-        if check_crates_io && !args.skip_check && is_published(name, version)? {
+        if check_crates_io && !args.ignore_published && is_published(name, version)? {
             skipped.push(format!("{name}@{version}"));
         } else {
             pending.push(name.clone());

@@ -26,6 +26,7 @@ letmerelease -- --no-verify          # forward arguments to cargo publish
 | `--wait` | 180 | Seconds to pause between batches |
 | `--large` | 20 | Pausing only kicks in above this many crates |
 | `--registry` | crates.io | Registry passed to `cargo publish` |
+| `--ignore-published` | off | Include crates whose versions are already published |
 
 Authentication is left to cargo, so use `cargo login` or `CARGO_REGISTRY_TOKEN`.
 
