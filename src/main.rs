@@ -54,6 +54,10 @@ impl Crate {
         let metadata: Value = serde_json::from_slice(&output.stdout)
             .map_err(|error| format!("invalid cargo metadata: {error}"))?;
 
+        Ok(Self::from_metadata(&metadata))
+    }
+
+    fn from_metadata(metadata: &Value) -> Vec<Crate> {
         let packages = metadata["packages"].as_array().into_iter().flatten();
         let publishable: Vec<&str> = packages
             .clone()
@@ -77,7 +81,9 @@ impl Crate {
                     .into_iter()
                     .flatten()
                     .filter(|dependency| {
-                        dependency["kind"] != "dev" && dependency["path"].is_string()
+                        dependency["path"].is_string()
+                            && (dependency["kind"] != "dev"
+                                || dependency["req"].as_str().is_some_and(|req| req != "*"))
                     })
                     .filter_map(|dependency| dependency["name"].as_str())
                     .filter(|name| publishable.contains(name))
@@ -98,7 +104,7 @@ impl Crate {
                 .cmp(&right.workspace_deps.len())
                 .then_with(|| left.name.cmp(&right.name))
         });
-        Ok(crates)
+        crates
     }
 }
 
@@ -314,6 +320,56 @@ mod tests {
             krate("core", &[]),
         ];
         assert_eq!(publish_order(crates).unwrap(), ["core", "utils", "app"]);
+    }
+
+    fn dev_dependency_metadata(requirement: &str) -> serde_json::Value {
+        serde_json::json!({
+            "packages": [
+                {
+                    "name": "freya-terminal",
+                    "version": "0.5.0-beta.12",
+                    "dependencies": [{
+                        "name": "freya-testing",
+                        "kind": "dev",
+                        "path": "/workspace/testing",
+                        "req": requirement
+                    }]
+                },
+                {
+                    "name": "freya-testing",
+                    "version": "0.5.0-beta.12",
+                    "dependencies": []
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn versioned_dev_dependencies_come_first() {
+        let metadata = dev_dependency_metadata("=0.5.0-beta.12");
+        assert_eq!(
+            publish_order(Crate::from_metadata(&metadata)).unwrap(),
+            ["freya-testing", "freya-terminal"]
+        );
+    }
+
+    #[test]
+    fn path_only_dev_dependencies_do_not_affect_order() {
+        let metadata = dev_dependency_metadata("*");
+        let crates = Crate::from_metadata(&metadata);
+        assert!(crates.iter().all(|krate| krate.workspace_deps.is_empty()));
+    }
+
+    #[test]
+    fn versioned_dev_dependency_cycles_are_rejected() {
+        let mut metadata = dev_dependency_metadata("=0.5.0-beta.12");
+        metadata["packages"][1]["dependencies"] = serde_json::json!([{
+            "name": "freya-terminal",
+            "kind": null,
+            "path": "/workspace/terminal",
+            "req": "=0.5.0-beta.12"
+        }]);
+        assert!(publish_order(Crate::from_metadata(&metadata)).is_err());
     }
 
     #[test]
