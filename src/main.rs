@@ -13,15 +13,15 @@ struct Args {
     /// Print the plan and run `cargo publish --dry-run` instead of publishing
     #[arg(long)]
     dry_run: bool,
-    /// Crates to publish before pausing, only used in large workspaces
-    #[arg(long, default_value_t = 5)]
+    /// Crates to publish per batch after the initial burst
+    #[arg(long, default_value_t = 3)]
     batch: usize,
-    /// Seconds to pause between batches
-    #[arg(long, default_value_t = 180)]
+    /// Seconds to pause after the initial burst and between batches
+    #[arg(long, default_value_t = 240)]
     wait: u64,
-    /// Workspaces with more crates than this get paused between batches
-    #[arg(long, default_value_t = 20)]
-    large: usize,
+    /// Crates to publish before the first pause
+    #[arg(long, default_value_t = 30)]
+    burst: usize,
     /// Registry to publish to. Custom registries are forwarded without a crates.io check
     #[arg(long)]
     registry: Option<String>,
@@ -31,6 +31,14 @@ struct Args {
     /// Extra arguments forwarded to `cargo publish`
     #[arg(last = true)]
     cargo_args: Vec<String>,
+}
+
+impl Args {
+    fn should_pause(&self, published: usize, total: usize) -> bool {
+        published < total
+            && published >= self.burst
+            && (published - self.burst) % self.batch.max(1) == 0
+    }
 }
 
 const USER_AGENT: &str = concat!("letmerelease/", env!("CARGO_PKG_VERSION"));
@@ -214,7 +222,7 @@ fn run(args: Args) -> Result<(), String> {
         forwarded_args.push("--registry".to_owned());
         forwarded_args.push(registry.clone());
     }
-    forwarded_args.extend(args.cargo_args);
+    forwarded_args.extend(args.cargo_args.iter().cloned());
 
     let check_crates_io = args
         .registry
@@ -255,15 +263,15 @@ fn run(args: Args) -> Result<(), String> {
         return Ok(());
     }
 
-    let paced = pending.len() > args.large;
+    let paced = pending.len() > args.burst;
     println!("Publishing {} crates in this order:", pending.len());
     for (index, name) in pending.iter().enumerate() {
         println!("  {}. {name}", index + 1);
     }
     if paced {
         println!(
-            "Large workspace, pausing {}s after every {} crates",
-            args.wait, args.batch
+            "Publishing an initial burst of {} crates, then pausing {}s before each batch of {}",
+            args.burst, args.wait, args.batch
         );
     }
 
@@ -281,8 +289,7 @@ fn run(args: Args) -> Result<(), String> {
     for (index, name) in pending.iter().enumerate() {
         println!("\nPublishing {name} ({}/{})", index + 1, pending.len());
         cargo_publish(&["-p", name], &forwarded_args)?;
-        let batch_done = (index + 1) % args.batch.max(1) == 0;
-        if paced && batch_done && index + 1 < pending.len() {
+        if args.should_pause(index + 1, pending.len()) {
             println!("Waiting {}s before the next batch", args.wait);
             sleep(Duration::from_secs(args.wait));
         }
@@ -302,7 +309,37 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Crate, index_path, publish_order};
+    use clap::Parser;
+
+    use crate::{Args, Crate, index_path, publish_order};
+
+    #[test]
+    fn default_schedule_pauses_after_burst_and_batches() {
+        let args = Args::parse_from(["letmerelease"]);
+        assert_eq!(args.wait, 240);
+        let pauses: Vec<usize> = (1..=40)
+            .filter(|published| args.should_pause(*published, 40))
+            .collect();
+        assert_eq!(pauses, [30, 33, 36, 39]);
+    }
+
+    #[test]
+    fn schedule_never_pauses_after_final_crate() {
+        let args = Args::parse_from(["letmerelease"]);
+        for total in [1, 20, 30, 31, 33, 36] {
+            assert!(!args.should_pause(total, total));
+        }
+        assert!((1..30).all(|published| !args.should_pause(published, 30)));
+    }
+
+    #[test]
+    fn schedule_supports_custom_burst_and_batch() {
+        let args = Args::parse_from(["letmerelease", "--burst", "5", "--batch", "2"]);
+        let pauses: Vec<usize> = (1..=10)
+            .filter(|published| args.should_pause(*published, 10))
+            .collect();
+        assert_eq!(pauses, [5, 7, 9]);
+    }
 
     fn krate(name: &str, deps: &[&str]) -> Crate {
         Crate {
